@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 
 from nflows.transforms.base import Transform
@@ -17,45 +16,49 @@ class UniformDequantization(Transform):
         super(UniformDequantization, self).__init__()
 
         # Mask used to project out the discrete dimensions
+        # shape = (n_batch, data_dim_1, ..., data_dim_n)
         self._mask = max_labels > 0
-        # Add one such that
-        # - discrete dimensions can be divided by _max_labels to give a number between 0 and 1
-        # - continuous dimensions have a 1 such that dividing doesn't do anything
-        self._max_labels = torch.where(max_labels > 0, max_labels, torch.zeros_like(max_labels)) + 1
+
+        # Add one because dequantization adds uniform noise
+        # shape = (n_batch, n_discrete_dims)
+        self._max_labels = max_labels[self._mask] + 1
 
         self._shape = max_labels.shape
 
     def forward(self, inputs, context=None):
         # Check if the final dims of inputs correspond with the mask
         batch_size = inputs.shape[0]
-        
+
         # Expand mask and max_labels with the batch dimension
-        batched_max_labels = self._max_labels.expand(batch_size, *self._max_labels.shape)
         batched_mask       = self._mask.expand(batch_size, *self._mask.shape)
+        batched_max_labels = self._max_labels.repeat(batch_size)
+
+        # Sample noise in the shape of batched_max_labels
+        noise = torch.rand(batched_max_labels.shape)
+
+        # Add noise to discrete dimensions and normalize
+        outputs = inputs.clone()
+        outputs[batched_mask] = (outputs[batched_mask] + noise) / batched_max_labels
+
+        return outputs
         
-        # Project out the continuous variables
-        inputs_masked = torch.where(batched_mask, inputs, torch.zeros_like(inputs))
-
-        # Sample noise and rescale to [0,1]
-        samples_masked = torch.where(batched_mask, torch.rand(inputs.shape), torch.zeros_like(inputs))
-        outputs_masked = (inputs_masked + samples_masked)/batched_max_labels
-
-        # Add back the continuous dimensions
-        return outputs_masked + torch.where(self._mask, torch.zeros_like(inputs), inputs)
-
     def inverse(self, inputs, context=None):
         # Check if the final dims of inputs correspond with the mask
         batch_size = inputs.shape[0]
         
         # Expand mask and max_labels with the batch dimension
-        batched_max_labels = self._max_labels.expand(batch_size, *self._max_labels.shape)
         batched_mask       = self._mask.expand(batch_size, *self._mask.shape)
+        batched_max_labels = self._max_labels.repeat(batch_size)
 
-        # Project out the continuous variables
-        inputs_masked = torch.where(batched_mask, inputs, torch.zeros_like(inputs))
+        # Scale to original label and floor
+        outputs = inputs.clone()
+        outputs[batched_mask] = torch.floor(outputs[batched_mask]*batched_max_labels)
 
-        # Scale to label and floor
-        outputs_masked = torch.floor(inputs_masked*batched_max_labels)
+        return outputs
 
-        # Add back the continuous dimensions
-        return outputs_masked + torch.where(batched_mask, torch.zeros_like(inputs), inputs)
+def main():
+    print("What")
+
+
+if __name__ == "__main__":
+    main()
