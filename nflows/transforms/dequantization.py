@@ -135,7 +135,11 @@ class VariationalDequantization(Transform):
         batched_max_labels = self._max_labels.repeat(batch_size) # shape = (n_batch * n_discrete_dims)
 
         # Sample noise in the shape of batched_max_labels
-        noise, logprob = self._flow.sample_and_log_prob(1, inputs) # shape = (n_batch, 1, n_discrete_dims), (n_batch, 1)
+        # Note - we have moved the batch size of the sample into the context. 
+        # i.e rather than generating a sample for every context, we instead generate a single sample for a batch of contexts
+        # We're essentially quite lucky that this is possible, because in the inverse direction 
+        # one has to evaluate the llh for all samples and all context of all of these samples, while only the diagonal entries are kept
+        noise, logprob = self._flow.sample_and_log_prob(1, context=inputs) # shape = (n_batch, 1, n_discrete_dims), (n_batch, 1)
 
         # Reshape to a 1d tensor
         noise = torch.reshape(noise, (-1,)) # shape = (n_batch * n_discrete_dims)
@@ -159,9 +163,11 @@ class VariationalDequantization(Transform):
         outputs[batched_mask] = torch.floor(outputs[batched_mask]*batched_max_labels) # shape = (n_batch, dim_data)
 
         # Compute the logprob
-        outputs_masked_reshaped = torch.reshape(outputs[batched_mask], (batch_size, -1)) # shape = (n_batch, n_discrete_dims)
+        inputs_masked_reshaped = torch.reshape(inputs[batched_mask], (batch_size, -1)) # shape = (n_batch, n_discrete_dims)
         
-        logprob = self._flow.log_prob(outputs_masked_reshaped, context=outputs)
+        print(inputs_masked_reshaped)
+        print(outputs.shape)
+        logprob = torch.reshape(self._flow.log_prob(inputs_masked_reshaped, context=outputs), (batch_size, 1))
 
         return outputs, logprob
 
