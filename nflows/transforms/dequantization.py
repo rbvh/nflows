@@ -7,8 +7,8 @@ from torch.nn import functional as F
 from nflows.transforms.autoregressive import MaskedPiecewiseRationalQuadraticAutoregressiveTransform
 from nflows.transforms.splines import rational_quadratic
 from nflows.transforms.permutations import RandomPermutation
+from nflows.transforms.base import CompositeTransform, InverseTransform
 from nflows.distributions.uniform import BoxUniform
-from nflows.transforms.base import CompositeTransform
 from nflows.flows.base import Flow
 
 
@@ -106,7 +106,8 @@ class VariationalDequantization(Transform):
         transforms = []
         for _ in range(rqs_flow_layers):
             transforms.append(RandomPermutation(features=self._masked_shape))
-            transforms.append(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
+            # Use an inverse transform to ensure that the sampling direction is fast
+            transforms.append(InverseTransform(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
                 features=self._masked_shape, # The features of the subflow are the n_discrete_dims 
                 context_features=self._shape, # The context is the full dim_data input
                 hidden_features=rqs_hidden_features,
@@ -122,7 +123,7 @@ class VariationalDequantization(Transform):
                 min_bin_width=rqs_min_bin_width,
                 min_bin_height=rqs_min_bin_height,
                 min_derivative=rqs_min_derivative,
-            ))
+            )))
         transform = CompositeTransform(transforms)
         self._flow = Flow(transform, base_dist)
 
@@ -137,8 +138,6 @@ class VariationalDequantization(Transform):
         # Sample noise in the shape of batched_max_labels
         # Note - we have moved the batch size of the sample into the context. 
         # i.e rather than generating a sample for every context, we instead generate a single sample for a batch of contexts
-        # We're essentially quite lucky that this is possible, because in the inverse direction 
-        # one has to evaluate the llh for all samples and all context of all of these samples, while only the diagonal entries are kept
         noise, logprob = self._flow.sample_and_log_prob(1, context=inputs) # shape = (n_batch, 1, n_discrete_dims), (n_batch, 1)
 
         # Reshape to a 1d tensor
@@ -158,16 +157,17 @@ class VariationalDequantization(Transform):
         batched_mask       = self._mask.expand(batch_size, *self._mask.shape) # shape = (n_batch, n_discrete_dims)
         batched_max_labels = self._max_labels.repeat(batch_size) # shape = (n_batch * n_discrete_dims)
 
-        # Scale to original label and floor
-        outputs = inputs.clone()
-        outputs[batched_mask] = torch.floor(outputs[batched_mask]*batched_max_labels) # shape = (n_batch, dim_data)
+        # Scale input to original label size and floor
+        floored_masked_inputs = torch.floor(inputs[batched_mask]*batched_max_labels) # shape = (n_batch * n_discrete_dims)
+
+        outputs = inputs.clone() # shape = (n_batch, dim_data)
+        outputs[batched_mask] = floored_masked_inputs # shape = (n_batch * n_discrete_dims)
+
+        # Extract the flow-added noise and reshape
+        inputs_masked_reshaped = torch.reshape(inputs[batched_mask]*batched_max_labels - floored_masked_inputs, (batch_size, -1)) # shape = (n_batch, n_discrete_dims)
 
         # Compute the logprob
-        inputs_masked_reshaped = torch.reshape(inputs[batched_mask], (batch_size, -1)) # shape = (n_batch, n_discrete_dims)
-        
-        print(inputs_masked_reshaped)
-        print(outputs.shape)
-        logprob = torch.reshape(self._flow.log_prob(inputs_masked_reshaped, context=outputs), (batch_size, 1))
+        logprob = torch.reshape(self._flow.log_prob(inputs_masked_reshaped, context=outputs), (batch_size, 1)) # shape = (n_batch, 1)
 
         return outputs, logprob
 
