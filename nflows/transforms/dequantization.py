@@ -147,7 +147,7 @@ class VariationalDequantization(Transform):
         outputs = inputs.clone() # shape = (n_batch, dim_data)
         outputs[batched_mask] = (outputs[batched_mask] + noise) / batched_max_labels # shape = (n_batch, dim_data)
 
-        return outputs, -logprob
+        return outputs, -torch.squeeze(logprob)
 
     def inverse(self, inputs, context=None):
         # Check if the final dims of inputs correspond with the mask
@@ -167,7 +167,7 @@ class VariationalDequantization(Transform):
         inputs_masked_reshaped = torch.reshape(inputs[batched_mask]*batched_max_labels - floored_masked_inputs, (batch_size, -1)) # shape = (n_batch, n_discrete_dims)
 
         # Compute the logprob
-        logprob = torch.reshape(self._flow.log_prob(inputs_masked_reshaped, context=outputs), (batch_size, 1)) # shape = (n_batch, 1)
+        logprob = self._flow.log_prob(inputs_masked_reshaped, context=outputs) # shape = (n_batch, 1)
 
         return outputs, logprob
 
