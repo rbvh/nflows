@@ -75,8 +75,8 @@ class VariationalDequantization(Transform):
     '''
     def __init__(self, max_labels,
             rqs_hidden_features,
-            rqs_flow_layers=5,
-            rqs_num_bins=10, 
+            rqs_flow_layers=3,
+            rqs_num_bins=5, 
             rqs_tails=None, 
             rqs_tail_bound=1.0, 
             rqs_num_blocks=2, 
