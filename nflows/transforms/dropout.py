@@ -26,10 +26,11 @@ class ProbabilityNet(nn.Module):
         self._layers = nn.ModuleList(layers)
 
     def forward(self, x):
-        for layer in self._layers:
+        # Relu on the first n-1 layers, softmax on the last
+        for layer in self._layers[:-1]:
             x = F.relu(layer(x))
-        return F.softmax(x)  
-
+        return F.softmax(self._layers[-1](x))
+        
 class StochasticDropout(Transform):
     '''
     Transform that stochastically sets a subset of features to zero.
@@ -63,8 +64,8 @@ class StochasticDropout(Transform):
                 "Make sure all indices between 0 and the maximum are included."
             )
 
-        # Arbitrarily set the hidden features to 2x n_probs
-        self._prob_net = ProbabilityNet(self._shape, self._n_probs, 2*self._n_probs, hidden_layers=hidden_layers)
+        # Arbitrarily set the hidden features to 10x n_probs
+        self._prob_net = ProbabilityNet(self._shape, self._n_probs, 10*self._n_probs, hidden_layers=hidden_layers)
 
     def forward(self, inputs, context=None):
         # Supplement all zeroes with noise
@@ -79,13 +80,13 @@ class StochasticDropout(Transform):
 
         # Get a tensor that has a 1 in places where input = 0
         # Then multiply with a descending list of integers
-        arranged_zeros = (inputs == 0) * torch.arange(inputs.shape[1], 0, -1) # shape = (n_batch, n_probs)
+        arranged_zeros = (inputs == 0) * torch.arange(inputs.shape[-1], 0, -1) # shape = (n_batch, n_probs)
 
         # argmax now always returns the first nonzero element of arranged_zeros
         # i.e. the first zero in inputs
         # Then we get the associated probability index
         # Finally, we subtract 1 to make the indices match up with those of _sample
-        prob_index = torch.squeeze(self._drop_indices[torch.argmax(arranged_zeros, 1, keepdim=True)] - 1) # shape = (n_batch)
+        prob_index = torch.squeeze(self._drop_indices[torch.argmax(arranged_zeros, -1, keepdim=True)] - 1, -1) # shape = (n_batch)
 
         # The above code returns an incorrect index if there were no zeroes
         # Set those indices to _n_probs - 1
@@ -94,7 +95,7 @@ class StochasticDropout(Transform):
         # Finally select the probs
         probs_selected = probs[torch.arange(inputs.shape[0]), prob_index]
 
-        return inputs_sampled, -torch.log(probs_selected) 
+        return inputs_sampled, torch.log(probs_selected) 
 
     def inverse(self, inputs, context=None):
         # Figure out the probabilities to drop features
@@ -105,12 +106,15 @@ class StochasticDropout(Transform):
         
         # Zero out the features above the cutoff
         drop_mask = self._drop_indices > prob_index 
+        print(self._drop_indices.shape)
+        print(prob_index.shape)
+        print(drop_mask)
         inputs_dropped = inputs.clone()
         inputs_dropped[drop_mask] = 0
 
         # prob_index corresponds with the kept dimensions
         # So a 0 means you only keep the zeroes, and a 1 means you keep zeroes and ones
         # Get the values of the chosen likelihoods
-        probs_selected = probs[torch.arange(inputs.shape[0]), torch.squeeze(prob_index)]
+        probs_selected = probs[torch.arange(inputs.shape[0]), torch.squeeze(prob_index, -1)]
 
         return inputs_dropped, torch.log(probs_selected)
