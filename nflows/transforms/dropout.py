@@ -10,7 +10,7 @@ from nflows.transforms.base import CompositeTransform, InverseTransform
 from nflows.flows.base import Flow
 
 class ProbabilityNet(nn.Module):
-    def __init__(self, in_features, out_features, hidden_features, hidden_layers=0):
+    def __init__(self, in_features, out_features, hidden_features=10, hidden_layers=2):
         super(ProbabilityNet, self).__init__()
         layers = []
 
@@ -29,7 +29,7 @@ class ProbabilityNet(nn.Module):
         # Relu on the first n-1 layers, softmax on the last
         for layer in self._layers[:-1]:
             x = F.relu(layer(x))
-        return F.softmax(self._layers[-1](x))
+        return F.softmax(self._layers[-1](x), dim=-1)
         
 class StochasticDropout(Transform):
     '''
@@ -43,7 +43,22 @@ class StochasticDropout(Transform):
     We don't currently do contexts here.
     '''
 
-    def __init__(self, drop_indices, hidden_layers=3):
+    def __init__(self, drop_indices, 
+            prob_net_hidden_layers=5,
+            prob_net_hidden_features=50,
+            rqs_flow_layers=3,
+            rqs_num_bins=5, 
+            rqs_tails=None, 
+            rqs_tail_bound=1.0, 
+            rqs_num_blocks=2, 
+            rqs_use_residual_blocks=True,
+            rqs_random_mask=False,
+            rqs_activation=F.relu,
+            rqs_dropout_probability=0.0,
+            rqs_use_batch_norm=False,
+            rqs_min_bin_width = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,
+            rqs_min_bin_height = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,
+            rqs_min_derivative = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,):
         super(StochasticDropout, self).__init__()
 
         self._shape = drop_indices.shape[0]
@@ -65,7 +80,39 @@ class StochasticDropout(Transform):
             )
 
         # Arbitrarily set the hidden features to 10x n_probs
-        self._prob_net = ProbabilityNet(self._shape, self._n_probs, 10*self._n_probs, hidden_layers=hidden_layers)
+        self._prob_net = ProbabilityNet(self._shape, 
+            self._n_probs, 
+            hidden_features=prob_net_hidden_features, 
+            hidden_layers=prob_net_hidden_layers
+        )
+
+
+        # Set up a flow 
+        base_dist = BoxUniform(torch.zeros(self._masked_shape), torch.ones(self._masked_shape))
+        transforms = []
+        for _ in range(rqs_flow_layers):
+            transforms.append(RandomPermutation(features=self._masked_shape))
+            # Use an inverse transform to ensure that the sampling direction is fast
+            transforms.append(InverseTransform(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
+                features=self._masked_shape, # The features of the subflow are the n_discrete_dims 
+                context_features=self._shape, # The context is the full dim_data input
+                hidden_features=rqs_hidden_features,
+                num_bins = rqs_num_bins, 
+                tails=rqs_tails, 
+                tail_bound=rqs_tail_bound, 
+                num_blocks=rqs_num_blocks, 
+                use_residual_blocks=rqs_use_residual_blocks,
+                random_mask=rqs_random_mask,
+                activation=rqs_activation,
+                dropout_probability=rqs_dropout_probability,
+                use_batch_norm=rqs_use_batch_norm,
+                min_bin_width=rqs_min_bin_width,
+                min_bin_height=rqs_min_bin_height,
+                min_derivative=rqs_min_derivative,
+            )))
+        transform = CompositeTransform(transforms)
+        self._flow = Flow(transform, base_dist)
+
 
     def forward(self, inputs, context=None):
         # Supplement all zeroes with noise
