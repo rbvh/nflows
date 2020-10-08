@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.nn.parameter import Parameter
 
+from nflows.distributions.uniform import BoxUniform
 from nflows.transforms.base import Transform
 from nflows.transforms.autoregressive import MaskedPiecewiseRationalQuadraticAutoregressiveTransform
 from nflows.transforms.splines import rational_quadratic
@@ -10,7 +12,7 @@ from nflows.transforms.base import CompositeTransform, InverseTransform
 from nflows.flows.base import Flow
 
 class ProbabilityNet(nn.Module):
-    def __init__(self, in_features, out_features, hidden_features=10, hidden_layers=2):
+    def __init__(self, in_features, out_features, hidden_features, hidden_layers=0):
         super(ProbabilityNet, self).__init__()
         layers = []
 
@@ -30,36 +32,119 @@ class ProbabilityNet(nn.Module):
         for layer in self._layers[:-1]:
             x = F.relu(layer(x))
         return F.softmax(self._layers[-1](x), dim=-1)
-        
-class StochasticDropout(Transform):
+
+class UniformStochasticDropout(Transform):
     '''
     Transform that stochastically sets a subset of features to zero.
     drop_indices is a list of indices of the shape of the features.
-    Indices with a 0 are never dropped, all others are dropped with a learned prob.
+    Indices with a 0 are never dropped, all others are dropped with a regressed prob.
 
     The likelihood contribution of the forward transform is uniform
-    The likelihood contribution of the inverse transform is given by the probability net
+    The likelihood contribution of the inverse transform is given by the regressed probs
 
-    We don't currently do contexts here.
+    Context is currently ignored
+    '''
+    def __init__(self, drop_indices):
+        super(UniformStochasticDropout, self).__init__()
+
+        self._shape = drop_indices.shape[0]
+        self._n_probs = torch.unique(drop_indices).shape[0]
+        self._drop_indices = drop_indices
+
+        # Add one for the option to not drop anything in case there is no index 0
+        if (torch.all(drop_indices != 0)):
+            self._n_probs += 1
+        
+        if self._n_probs <= 0:
+            raise ValueError(
+                "No droppable features included."
+            )
+
+        if (self._n_probs != torch.max(drop_indices).item()+1):
+            raise ValueError(
+                "Make sure all indices between 0 and the maximum are included."
+            )
+        
+        self._weights = Parameter(torch.Tensor(self._n_probs))
+        self._weights.data = torch.rand(self._n_probs)
+    
+    def forward(self, inputs, context=None):
+        # We first locate the index of the first zero element
+        # Do this by:
+        # 1) inputs == 0 gives a tensor of booleans
+        # 2) multiply with a tensor of decreasing numbers
+        # 3) get the argmax
+        zero_mask = inputs == 0
+        first_zero_index = torch.argmax(zero_mask * torch.arange(inputs.shape[-1], 0, -1), -1, keepdim=True) # shape = (n_batch, 1)
+
+        # Next, compute the highest index kept from _drop_indices 
+        # Have to subtract 1 to make the indices match up with those of _sample
+        # If there were no zeroes, the index should be self._n_probs - 1
+        probs_dropout_index = torch.squeeze(self._drop_indices[first_zero_index] - 1, -1) # shape = (n_batch)
+        probs_dropout_index[torch.all(inputs != 0, axis=1)] = self._n_probs - 1 # shape = (n_batch)
+
+        # Compute the probs
+        log_probs_dropout_selected = torch.log(F.softmax(self._weights)[probs_dropout_index])
+        
+        # Clone inputs and append random noise
+        outputs = inputs.clone()
+        outputs[zero_mask] = torch.rand(inputs[zero_mask].shape)
+
+        return outputs, log_probs_dropout_selected
+
+    def inverse(self, inputs, context=None):
+        batch_size = inputs.shape[0]
+
+        # Probabilities to drop features
+        probs_dropout = F.softmax(self._weights)
+        cum_probs_dropout = torch.cumsum(probs_dropout, dim=0)
+    
+        # Select a drop probability
+        larger_than_cum_probs_dropout = torch.rand(batch_size, 1) < cum_probs_dropout
+        # Do the arange trick to find first nonzero
+        drop_index_selected = torch.argmax(larger_than_cum_probs_dropout*torch.arange(self._n_probs, 0, -1), axis=1)
+        log_probs_dropout_selected = torch.log(probs_dropout[drop_index_selected])
+
+        # Clone the input
+        outputs = inputs.clone()
+
+        # Zero out the features above the cutoff
+        zero_mask = self._drop_indices > drop_index_selected[:,None]
+        outputs[zero_mask] = 0
+
+        return outputs, -log_probs_dropout_selected
+
+class VariationalStochasticDropout(Transform):
+    '''
+    Transform that stochastically sets a subset of features to zero.
+    drop_indices is a list of indices of the shape of the features.
+    Indices with a 0 are never dropped, all others are dropped with a conditional probability
+
+    The likelihood contribution of the forward transform is variational
+    The likelihood contribution of the inverse transform is given by the conditional probabilities
+
+    Context is currently ignored
     '''
 
     def __init__(self, drop_indices, 
-            prob_net_hidden_layers=5,
-            prob_net_hidden_features=50,
-            rqs_flow_layers=3,
-            rqs_num_bins=5, 
-            rqs_tails=None, 
-            rqs_tail_bound=1.0, 
-            rqs_num_blocks=2, 
-            rqs_use_residual_blocks=True,
-            rqs_random_mask=False,
-            rqs_activation=F.relu,
-            rqs_dropout_probability=0.0,
-            rqs_use_batch_norm=False,
-            rqs_min_bin_width = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,
-            rqs_min_bin_height = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,
-            rqs_min_derivative = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,):
-        super(StochasticDropout, self).__init__()
+        prob_net_hidden_layers=5,
+        prob_net_hidden_features=50,
+        rqs_flow_layers=5,
+        rqs_hidden_features=50,
+        rqs_num_bins=10, 
+        rqs_tails=None, 
+        rqs_tail_bound=1.0, 
+        rqs_num_blocks=2, 
+        rqs_use_residual_blocks=True,
+        rqs_random_mask=False,
+        rqs_activation=F.relu,
+        rqs_dropout_probability=0.0,
+        rqs_use_batch_norm=False,
+        rqs_min_bin_width = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,
+        rqs_min_bin_height = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,
+        rqs_min_derivative = rational_quadratic.DEFAULT_MIN_BIN_WIDTH,):
+
+        super(VariationalStochasticDropout, self).__init__()
 
         self._shape = drop_indices.shape[0]
         self._n_probs = torch.unique(drop_indices).shape[0]
@@ -79,25 +164,23 @@ class StochasticDropout(Transform):
                 "Make sure all indices between 0 and the maximum are included."
             )
 
-        # Arbitrarily set the hidden features to 10x n_probs
         self._prob_net = ProbabilityNet(self._shape, 
             self._n_probs, 
             hidden_features=prob_net_hidden_features, 
             hidden_layers=prob_net_hidden_layers
         )
 
-
         # Set up a flow 
-        base_dist = BoxUniform(torch.zeros(self._masked_shape), torch.ones(self._masked_shape))
+        base_dist = BoxUniform(torch.zeros(self._shape), torch.ones(self._shape))
         transforms = []
         for _ in range(rqs_flow_layers):
-            transforms.append(RandomPermutation(features=self._masked_shape))
+            transforms.append(RandomPermutation(features=self._shape))
             # Use an inverse transform to ensure that the sampling direction is fast
             transforms.append(InverseTransform(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
-                features=self._masked_shape, # The features of the subflow are the n_discrete_dims 
-                context_features=self._shape, # The context is the full dim_data input
+                features=self._shape,
+                context_features=self._shape, # features and context_features are both the feature size
                 hidden_features=rqs_hidden_features,
-                num_bins = rqs_num_bins, 
+                num_bins=rqs_num_bins, 
                 tails=rqs_tails, 
                 tail_bound=rqs_tail_bound, 
                 num_blocks=rqs_num_blocks, 
@@ -113,55 +196,62 @@ class StochasticDropout(Transform):
         transform = CompositeTransform(transforms)
         self._flow = Flow(transform, base_dist)
 
-
     def forward(self, inputs, context=None):
-        # Supplement all zeroes with noise
-        inputs_sampled = inputs.clone() # shape = (n_batch, dim_data)
-        n_zero_elements = torch.sum(inputs_sampled == 0).item() # shape = n_batch*n_zero_features
-        inputs_sampled[inputs_sampled == 0] = torch.rand(n_zero_elements) # shape = (n_batch, dim_data)
+        # We first locate the index of the first zero element
+        # Do this by:
+        # 1) inputs == 0 gives a tensor of booleans
+        # 2) multiply with a tensor of decreasing numbers
+        # 3) get the argmax
+        zero_mask = inputs == 0
+        first_zero_index = torch.argmax(zero_mask * torch.arange(inputs.shape[-1], 0, -1), -1, keepdim=True) # shape = (n_batch, 1)
 
-        # We now need to compute the likelihood of the inverse transform
-
-        # Get dropout likelihoods from net
-        probs = self._prob_net(inputs_sampled) # shape = (n_batch, n_probs)
-
-        # Get a tensor that has a 1 in places where input = 0
-        # Then multiply with a descending list of integers
-        arranged_zeros = (inputs == 0) * torch.arange(inputs.shape[-1], 0, -1) # shape = (n_batch, n_probs)
-
-        # argmax now always returns the first nonzero element of arranged_zeros
-        # i.e. the first zero in inputs
-        # Then we get the associated probability index
-        # Finally, we subtract 1 to make the indices match up with those of _sample
-        prob_index = torch.squeeze(self._drop_indices[torch.argmax(arranged_zeros, -1, keepdim=True)] - 1, -1) # shape = (n_batch)
-
-        # The above code returns an incorrect index if there were no zeroes
-        # Set those indices to _n_probs - 1
+        # Next, compute the highest index kept from _drop_indices 
+        # Have to subtract 1 to make the indices match up with those of _sample
+        # If there were no zeroes, the index should be self._n_probs - 1
+        prob_index = torch.squeeze(self._drop_indices[first_zero_index] - 1, -1) # shape = (n_batch)
         prob_index[torch.all(inputs != 0, axis=1)] = self._n_probs - 1 # shape = (n_batch)
-        
-        # Finally select the probs
-        probs_selected = probs[torch.arange(inputs.shape[0]), prob_index]
 
-        return inputs_sampled, torch.log(probs_selected) 
+        # Now compute the dropout probabilities - first sample the inverse from the conditional flow
+        # Note - we have moved the batch size of the sample into the context. 
+        # i.e rather than generating a sample for every context, we instead generate a single sample for a batch of contexts
+        outputs, log_probs_flow = self._flow.sample_and_log_prob(1, context=inputs) # shape = (n_batch, 1, n_discrete_dims), (n_batch, 1)
+        # Squeeze out the unit dim of n_samples = 1 above
+        outputs = torch.squeeze(outputs, dim=1)
+        log_probs_flow = torch.squeeze(log_probs_flow, dim=1)
+
+        # Supplement output with flow noise       
+        #outputs = torch.where(zero_mask, noise_flow, inputs)
+ 
+        # Get dropout likelihoods from net
+        probs_dropout = self._prob_net(outputs)
+        
+        # Pick out the selected probs
+        log_probs_dropout_selected = torch.log(probs_dropout[torch.arange(inputs.shape[0]), prob_index])
+
+        return outputs, log_probs_dropout_selected - log_probs_flow
 
     def inverse(self, inputs, context=None):
-        # Figure out the probabilities to drop features
-        probs = self._prob_net(inputs)
+        batch_size = inputs.shape[0]
 
-        # Sample a cutoff
-        prob_index = torch.multinomial(probs, 1, replacement=True)
+        # Probabilities to drop features
+        probs_dropout = self._prob_net(inputs)
+        cum_probs_dropout = torch.cumsum(probs_dropout, dim=1)
+
+        # Select a drop probability
+        larger_than_cum_probs = torch.rand(batch_size, 1) < cum_probs_dropout
+
+        # Do the arange trick to find first nonzero
+        selected_index = torch.argmax(larger_than_cum_probs*torch.arange(self._n_probs, 0, -1), axis=1)
+        log_probs_dropout_selected = torch.log(probs_dropout[torch.arange(batch_size), selected_index])
         
+        # Clone the input
+        outputs = inputs.clone()
+
         # Zero out the features above the cutoff
-        drop_mask = self._drop_indices > prob_index 
-        print(self._drop_indices.shape)
-        print(prob_index.shape)
-        print(drop_mask)
-        inputs_dropped = inputs.clone()
-        inputs_dropped[drop_mask] = 0
+        zero_mask = self._drop_indices > selected_index[:,None]
+        outputs[zero_mask] = 0
 
-        # prob_index corresponds with the kept dimensions
-        # So a 0 means you only keep the zeroes, and a 1 means you keep zeroes and ones
-        # Get the values of the chosen likelihoods
-        probs_selected = probs[torch.arange(inputs.shape[0]), torch.squeeze(prob_index, -1)]
+        # Get the logprob of the flow
+        log_probs_flow = self._flow.log_prob(inputs, context=outputs)
 
-        return inputs_dropped, torch.log(probs_selected)
+        return outputs, log_probs_flow - log_probs_dropout_selected
