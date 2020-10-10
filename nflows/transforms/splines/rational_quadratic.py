@@ -9,6 +9,56 @@ DEFAULT_MIN_BIN_WIDTH = 1e-3
 DEFAULT_MIN_BIN_HEIGHT = 1e-3
 DEFAULT_MIN_DERIVATIVE = 1e-3
 
+def constrained_rational_quadratic_spline(
+    inputs,
+    unnormalized_widths,
+    unnormalized_heights,
+    unnormalized_derivatives,
+    inverse=False,
+    left=0.0,
+    right=1.0,
+    bottom=0.0,
+    top=1.0,
+    min_bin_width=DEFAULT_MIN_BIN_WIDTH,
+    min_bin_height=DEFAULT_MIN_BIN_HEIGHT,
+    min_derivative=DEFAULT_MIN_DERIVATIVE,
+):
+
+    left_mask = (inputs == left)
+    right_mask = (inputs == right)
+    inside_interval_mask = torch.logical_and(inputs > left, inputs < right)
+   
+    unnormalized_derivatives = F.pad(unnormalized_derivatives, pad=(1,1))
+    unnormalized_derivatives[..., 0] = 1
+    unnormalized_derivatives[..., -1] = 1
+
+    outputs = torch.zeros_like(inputs)
+    logabsdet = torch.zeros_like(inputs)
+
+    outputs[left_mask] = bottom
+    outputs[right_mask] = top
+    # logabsdet is already zero
+
+    (
+        outputs[inside_interval_mask],
+        logabsdet[inside_interval_mask],
+    ) = rational_quadratic_spline(
+        inputs=inputs[inside_interval_mask],
+        unnormalized_widths=unnormalized_widths[inside_interval_mask, :],
+        unnormalized_heights=unnormalized_heights[inside_interval_mask, :],
+        unnormalized_derivatives=unnormalized_derivatives[inside_interval_mask, :],
+        inverse=inverse,
+        left=left,
+        right=right,
+        bottom=bottom,
+        top=top,
+        min_bin_width=min_bin_width,
+        min_bin_height=min_bin_height,
+        min_derivative=min_derivative,
+    )
+
+    return outputs, logabsdet
+
 
 def unconstrained_rational_quadratic_spline(
     inputs,

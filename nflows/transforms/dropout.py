@@ -214,13 +214,13 @@ class VariationalStochasticDropout(Transform):
         # Now compute the dropout probabilities - first sample the inverse from the conditional flow
         # Note - we have moved the batch size of the sample into the context. 
         # i.e rather than generating a sample for every context, we instead generate a single sample for a batch of contexts
-        outputs, log_probs_flow = self._flow.sample_and_log_prob(1, context=inputs) # shape = (n_batch, 1, n_discrete_dims), (n_batch, 1)
+        noise_flow, log_probs_flow = self._flow.sample_and_log_prob(1, context=inputs) # shape = (n_batch, 1, n_discrete_dims), (n_batch, 1)
         # Squeeze out the unit dim of n_samples = 1 above
-        outputs = torch.squeeze(outputs, dim=1)
+        noise_flow = torch.squeeze(noise_flow, dim=1)
         log_probs_flow = torch.squeeze(log_probs_flow, dim=1)
 
         # Supplement output with flow noise       
-        #outputs = torch.where(zero_mask, noise_flow, inputs)
+        outputs = torch.where(zero_mask, noise_flow, inputs)
  
         # Get dropout likelihoods from net
         probs_dropout = self._prob_net(outputs)

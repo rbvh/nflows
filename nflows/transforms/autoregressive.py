@@ -16,6 +16,7 @@ from nflows.transforms.splines import rational_quadratic
 from nflows.transforms.splines.rational_quadratic import (
     rational_quadratic_spline,
     unconstrained_rational_quadratic_spline,
+    constrained_rational_quadratic_spline,
 )
 from nflows.utils import torchutils
 
@@ -379,6 +380,8 @@ class MaskedPiecewiseRationalQuadraticAutoregressiveTransform(AutoregressiveTran
     def _output_dim_multiplier(self):
         if self.tails == "linear":
             return self.num_bins * 3 - 1
+        elif self.tails == "constrained":
+            return self.num_bins * 3 - 1
         elif self.tails is None:
             return self.num_bins * 3 + 1
         else:
@@ -405,6 +408,9 @@ class MaskedPiecewiseRationalQuadraticAutoregressiveTransform(AutoregressiveTran
         elif self.tails == "linear":
             spline_fn = unconstrained_rational_quadratic_spline
             spline_kwargs = {"tails": self.tails, "tail_bound": self.tail_bound}
+        elif self.tails == "constrained":
+            spline_fn = constrained_rational_quadratic_spline
+            spline_kwargs = {}
         else:
             raise ValueError
 
