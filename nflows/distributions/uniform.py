@@ -38,7 +38,7 @@ class BoxUniform(Distribution):
         
     def _log_prob(self, inputs, context):
         # Note: the context is ignored.
-        if inputs.shape[1:] != low.shape:
+        if inputs.shape[1:] != self._low.shape:
             raise ValueError(
                 "Expected input of shape {}, got {}".format(
                     low.shape, inputs.shape[1:]
