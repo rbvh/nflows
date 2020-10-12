@@ -47,10 +47,9 @@ class UniformStochasticDropout(Transform):
     def __init__(self, drop_indices):
         super(UniformStochasticDropout, self).__init__()
 
-        self._shape = drop_indices.shape[0]
-        self._n_probs = torch.unique(drop_indices).shape[0]
-        self._drop_indices = drop_indices
-
+        self.register_buffer("_n_probs", torch.unique(drop_indices).shape[0])
+        self.register_buffer("_drop_indices", drop_indices)
+        
         # Add one for the option to not drop anything in case there is no index 0
         if (torch.all(drop_indices != 0)):
             self._n_probs += 1
@@ -65,7 +64,7 @@ class UniformStochasticDropout(Transform):
                 "Make sure all indices between 0 and the maximum are included."
             )
         
-        self._weights = Parameter(torch.Tensor(self._n_probs))
+        self.register_parameter(_weights, torch.Tensor(self._n_probs))
         self._weights.data = torch.rand(self._n_probs)
     
     def forward(self, inputs, context=None):
