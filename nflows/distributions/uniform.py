@@ -32,17 +32,16 @@ class BoxUniform(Distribution):
                 "low has elements that are higher than high"
             )
 
-        self._shape = low.shape
-        self._low = low
-        self._high = high
-        self._log_prob_value = -torch.sum(torch.log(high - low))
-
+        self.register_buffer("_low", low)
+        self.register_buffer("_high", high)
+        self.register_buffer("_log_prob_value", -torch.sum(torch.log(high - low)))
+        
     def _log_prob(self, inputs, context):
         # Note: the context is ignored.
-        if inputs.shape[1:] != self._shape:
+        if inputs.shape[1:] != low.shape:
             raise ValueError(
                 "Expected input of shape {}, got {}".format(
-                    self._shape, inputs.shape[1:]
+                    low.shape, inputs.shape[1:]
                 )
             )
         return self._log_prob_value.expand(inputs.shape[0])
@@ -51,7 +50,7 @@ class BoxUniform(Distribution):
         context_size = 1 if context is None else context.shape[0]
         low_expanded =  self._low.expand(context_size  * num_samples, *self._shape)
         high_expanded = self._high.expand(context_size * num_samples, *self._shape)
-        samples = low_expanded + torch.rand(context_size * num_samples, *self._shape)*(high_expanded - low_expanded)
+        samples = low_expanded + torch.rand(context_size * num_samples, *self._shape, devide=self._low.device)*(high_expanded - low_expanded)
 
         if context is None:
             return samples
