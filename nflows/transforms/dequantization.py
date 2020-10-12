@@ -25,14 +25,12 @@ class UniformDequantization(Transform):
         super(UniformDequantization, self).__init__()
 
         # Mask used to project out the discrete dimensions
-        # shape = (n_batch, data_dim_1, ..., data_dim_n)
-        self._mask = max_labels > 0
+        self.register_buffer("_mask", max_labels > 0) # shape = (dim_data)
 
         # Add one because dequantization adds uniform noise
         # shape = (n_batch, n_discrete_dims)
-        self._max_labels = max_labels[self._mask] + 1
+        self.register_buffer("_max_labels", max_labels[self._mask] + 1)
 
-        self._shape = max_labels.shape
 
     def forward(self, inputs, context=None):
         # Check if the final dims of inputs correspond with the mask
@@ -43,13 +41,13 @@ class UniformDequantization(Transform):
         batched_max_labels = self._max_labels.repeat(batch_size)
 
         # Sample noise in the shape of batched_max_labels
-        noise = torch.rand(batched_max_labels.shape)
+        noise = torch.rand(batched_max_labels.shape, device=inputs.device)
 
         # Add noise to discrete dimensions and normalize
         outputs = inputs.clone()
         outputs[batched_mask] = (outputs[batched_mask] + noise) / batched_max_labels
 
-        return outputs, torch.zeros(batch_size)
+        return outputs, inputs.new_zeros(batch_size)
         
     def inverse(self, inputs, context=None):
         # Check if the final dims of inputs correspond with the mask
@@ -63,7 +61,7 @@ class UniformDequantization(Transform):
         outputs = inputs.clone()
         outputs[batched_mask] = torch.floor(outputs[batched_mask]*batched_max_labels)
 
-        return outputs, torch.zeros(batch_size)
+        return outputs, inputs.new_zeros(batch_size)
 
 class VariationalDequantization(Transform):
     '''
@@ -92,24 +90,23 @@ class VariationalDequantization(Transform):
         super(VariationalDequantization, self).__init__()
 
         # Mask used to project out the discrete dimensions
-        self._mask = max_labels > 0 # shape = (dim_data)
+        self.register_buffer("_mask", max_labels > 0) # shape = (dim_data)
 
         # Add one because dequantization adds uniform noise
-        self._max_labels = max_labels[self._mask] + 1 # shape = (n_discrete_dims)
+        self.register_buffer("_max_labels", max_labels[self._mask] + 1) # shape = (n_discrete_dims)
 
-        
-        self._shape = max_labels.shape[0] # shape = 1        
-        self._masked_shape = self._max_labels.shape[0] # shape = 1
+        shape = max_labels.shape[0]
+        masked_shape = self._max_labels.shape[0]
 
         # Set up a flow 
-        base_dist = BoxUniform(torch.zeros(self._masked_shape), torch.ones(self._masked_shape))
+        base_dist = BoxUniform(torch.zeros(masked_shape), torch.ones(masked_shape))
         transforms = []
         for _ in range(rqs_flow_layers):
-            transforms.append(RandomPermutation(features=self._masked_shape))
+            transforms.append(RandomPermutation(features=masked_shape))
             # Use an inverse transform to ensure that the sampling direction is fast
             transforms.append(InverseTransform(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
-                features=self._masked_shape, # The features of the subflow are the n_discrete_dims 
-                context_features=self._shape, # The context is the full dim_data input
+                features=masked_shape, # The features of the subflow are the n_discrete_dims 
+                context_features=shape, # The context is the full dim_data input
                 hidden_features=rqs_hidden_features,
                 num_bins = rqs_num_bins, 
                 tails=rqs_tails, 
@@ -125,7 +122,7 @@ class VariationalDequantization(Transform):
                 min_derivative=rqs_min_derivative,
             )))
         transform = CompositeTransform(transforms)
-        self._flow = Flow(transform, base_dist)
+        self._flow = Flow(transform, base_dist).to()
 
     def forward(self, inputs, context=None):
         # Check if the final dims of inputs correspond with the mask
