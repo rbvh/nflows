@@ -47,7 +47,7 @@ class UniformStochasticDropout(Transform):
     def __init__(self, drop_indices):
         super(UniformStochasticDropout, self).__init__()
 
-        self.register_buffer("_n_probs", torch.unique(drop_indices).shape[0])
+        self._n_probs = torch.unique(drop_indices).shape[0]
         self.register_buffer("_drop_indices", drop_indices)
         
         # Add one for the option to not drop anything in case there is no index 0
@@ -64,8 +64,7 @@ class UniformStochasticDropout(Transform):
                 "Make sure all indices between 0 and the maximum are included."
             )
         
-        self.register_parameter(_weights, torch.Tensor(self._n_probs))
-        self._weights.data = torch.rand(self._n_probs)
+        self.register_parameter("_weights", Parameter(torch.rand(self._n_probs)))
     
     def forward(self, inputs, context=None):
         # We first locate the index of the first zero element
@@ -87,7 +86,7 @@ class UniformStochasticDropout(Transform):
         
         # Clone inputs and append random noise
         outputs = inputs.clone()
-        outputs[zero_mask] = torch.rand(inputs[zero_mask].shape)
+        outputs[zero_mask] = torch.rand(inputs[zero_mask].shape, device=inputs.device)
 
         return outputs, log_probs_dropout_selected
 
@@ -99,7 +98,7 @@ class UniformStochasticDropout(Transform):
         cum_probs_dropout = torch.cumsum(probs_dropout, dim=0)
     
         # Select a drop probability
-        larger_than_cum_probs_dropout = torch.rand(batch_size, 1) < cum_probs_dropout
+        larger_than_cum_probs_dropout = torch.rand(batch_size, 1, device=inputs.device) < cum_probs_dropout
         # Do the arange trick to find first nonzero
         drop_index_selected = torch.argmax(larger_than_cum_probs_dropout*torch.arange(self._n_probs, 0, -1), axis=1)
         log_probs_dropout_selected = torch.log(probs_dropout[drop_index_selected])
