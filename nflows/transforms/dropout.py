@@ -73,7 +73,7 @@ class UniformStochasticDropout(Transform):
         # 2) multiply with a tensor of decreasing numbers
         # 3) get the argmax
         zero_mask = inputs == 0
-        first_zero_index = torch.argmax(zero_mask * torch.arange(inputs.shape[-1], 0, -1), -1, keepdim=True) # shape = (n_batch, 1)
+        first_zero_index = torch.argmax(zero_mask * torch.arange(inputs.shape[-1], 0, -1, device=inputs.device), -1, keepdim=True) # shape = (n_batch, 1)
 
         # Next, compute the highest index kept from _drop_indices 
         # Have to subtract 1 to make the indices match up with those of _sample
@@ -201,7 +201,7 @@ class VariationalStochasticDropout(Transform):
         # 2) multiply with a tensor of decreasing numbers
         # 3) get the argmax
         zero_mask = inputs == 0
-        first_zero_index = torch.argmax(zero_mask * torch.arange(inputs.shape[-1], 0, -1), -1, keepdim=True) # shape = (n_batch, 1)
+        first_zero_index = torch.argmax(zero_mask * torch.arange(inputs.shape[-1], 0, -1, device=inputs.device), -1, keepdim=True) # shape = (n_batch, 1)
 
         # Next, compute the highest index kept from _drop_indices 
         # Have to subtract 1 to make the indices match up with those of _sample
