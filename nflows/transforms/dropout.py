@@ -146,7 +146,7 @@ class VariationalStochasticDropout(Transform):
 
         self._shape = drop_indices.shape[0]
         self._n_probs = torch.unique(drop_indices).shape[0]
-        self._drop_indices = drop_indices
+        self.register_buffer("_drop_indices", drop_indices)
 
         # Add one for the option to not drop anything in case there is no index 0
         if (torch.all(drop_indices != 0)):
@@ -236,7 +236,7 @@ class VariationalStochasticDropout(Transform):
         cum_probs_dropout = torch.cumsum(probs_dropout, dim=1)
 
         # Select a drop probability
-        larger_than_cum_probs = torch.rand(batch_size, 1) < cum_probs_dropout
+        larger_than_cum_probs = torch.rand(batch_size, 1, device=inputs.device) < cum_probs_dropout
 
         # Do the arange trick to find first nonzero
         selected_index = torch.argmax(larger_than_cum_probs*torch.arange(self._n_probs, 0, -1), axis=1)
