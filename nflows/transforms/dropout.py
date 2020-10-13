@@ -82,7 +82,7 @@ class UniformStochasticDropout(Transform):
         probs_dropout_index[torch.all(inputs != 0, axis=1)] = self._n_probs - 1 # shape = (n_batch)
 
         # Compute the probs
-        log_probs_dropout_selected = torch.log(F.softmax(self._weights)[probs_dropout_index])
+        log_probs_dropout_selected = torch.log(F.softmax(self._weights, dim=0)[probs_dropout_index])
         
         # Clone inputs and append random noise
         outputs = inputs.clone()
@@ -94,13 +94,14 @@ class UniformStochasticDropout(Transform):
         batch_size = inputs.shape[0]
 
         # Probabilities to drop features
-        probs_dropout = F.softmax(self._weights)
+        probs_dropout = F.softmax(self._weights, dim=0)
         cum_probs_dropout = torch.cumsum(probs_dropout, dim=0)
     
         # Select a drop probability
         larger_than_cum_probs_dropout = torch.rand(batch_size, 1, device=inputs.device) < cum_probs_dropout
+        
         # Do the arange trick to find first nonzero
-        drop_index_selected = torch.argmax(larger_than_cum_probs_dropout*torch.arange(self._n_probs, 0, -1), axis=1)
+        drop_index_selected = torch.argmax(larger_than_cum_probs_dropout*torch.arange(self._n_probs, 0, -1, device=inputs.device), axis=1)
         log_probs_dropout_selected = torch.log(probs_dropout[drop_index_selected])
 
         # Clone the input
@@ -239,7 +240,7 @@ class VariationalStochasticDropout(Transform):
         larger_than_cum_probs = torch.rand(batch_size, 1, device=inputs.device) < cum_probs_dropout
 
         # Do the arange trick to find first nonzero
-        selected_index = torch.argmax(larger_than_cum_probs*torch.arange(self._n_probs, 0, -1), axis=1)
+        selected_index = torch.argmax(larger_than_cum_probs*torch.arange(self._n_probs, 0, -1, device=inputs.device), axis=1)
         log_probs_dropout_selected = torch.log(probs_dropout[torch.arange(batch_size), selected_index])
         
         # Clone the input
